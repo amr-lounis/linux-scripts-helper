@@ -1,0 +1,61 @@
+SMB_USER="smbuser"
+SMB_PASS="Password123"
+SHARE_NAME="private"
+SHARE_PATH="/srv/samba/${SHARE_NAME}"
+WORKGROUP="WORKGROUP"
+CREATEMASK="0750"
+DIRMASK="0750"
+
+sudo apt update
+sudo apt install -y samba samba-common-bin acl smbclient
+
+if ! id -u "$SMB_USER" >/dev/null 2>&1; then
+  sudo useradd --system --no-create-home --shell /usr/sbin/nologin \
+    --comment "" "$SMB_USER"
+fi
+
+echo "${SMB_USER}:${SMB_PASS}" | sudo chpasswd
+
+(echo "$SMB_PASS"; echo "$SMB_PASS") | sudo smbpasswd -s -a "$SMB_USER"
+
+sudo mkdir -p "$SHARE_PATH"
+sudo chown "$SMB_USER":"$SMB_USER" "$SHARE_PATH"
+sudo chmod 2770 "$SHARE_PATH"
+
+sudo tee /etc/samba/smb.conf > /dev/null <<EOF
+[global]
+   workgroup = $WORKGROUP
+   server string = Samba Server
+   security = user
+   map to guest = never
+   restrict anonymous = 2
+   server min protocol = SMB2
+   client min protocol = SMB2
+   
+[$SHARE_NAME]
+   comment = Secure SMB Share
+   path = $SHARE_PATH
+   browsable = yes
+   guest ok = no
+   read only = no
+   valid users = $SMB_USER
+   create mask = $CREATEMASK
+   directory mask = $DIRMASK
+   force user = $SMB_USER
+EOF
+#===========================================
+sudo testparm -s
+sudo systemctl restart smbd nmbd
+sudo systemctl enable smbd nmbd
+sudo ufw allow samba
+sudo smbstatus 
+systemctl list-unit-files | grep smb
+#===========================================
+#\\192.168.11.138\private
+#whait main time befor start 
+#===========================================
+#smbclient -d3 //localhost/private -U smbuser
+#smbclient -L //localhost -U smbuser
+#smbclient //localhost/private -U smbuser
+Password123
+#===========================================

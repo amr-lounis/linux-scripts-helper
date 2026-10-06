@@ -1,0 +1,21 @@
+TARGET_IP="0.0.0.0" 
+INITIATOR_IP="192.168.11.1"
+IQN_NAME="iqn.2025-07.lab:target1"
+BACKING_DEVICE="/dev/sdb"
+
+sudo apt update
+sudo apt install -y tgt
+
+sudo tee /etc/tgt/conf.d/iscsi.conf > /dev/null <<EOF
+<target $IQN_NAME>
+    backing-store $BACKING_DEVICE
+    initiator-address $INITIATOR_IP
+</target>
+EOF
+
+sudo systemctl restart tgt
+sudo systemctl enable tgt
+
+sudo tgtadm --mode target --op show
+
+#sudo tgtadm --lld iscsi --op delete --mode logicalunit --tid 1 --lun 0

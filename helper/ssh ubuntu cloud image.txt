@@ -1,0 +1,7 @@
+#this sshd_config not ssh_config
+sudo nano /etc/ssh/sshd_config
+-----------------------------
+do commant to this
+#Include /etc/ssh/sshd_config.d/*.conf
+-----------------------------
+sudo systemctl restart ssh

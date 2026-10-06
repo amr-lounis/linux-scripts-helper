@@ -1,0 +1,5 @@
+# +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+sudo timedatectl set-timezone Africa/Algiers
+sudo timedatectl set-timezone UTC
+sudo date -s "$(curl -sI https://google.com | grep -i '^date:' | cut -d' ' -f2-)"
+timedatectl 

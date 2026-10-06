@@ -1,0 +1,11 @@
+sudo apt update
+sudo apt install openssh-server -y
+sudo service ssh start
+sudo systemctl enable ssh
+sudo service ssh status
+
+sudo nano /etc/ssh/sshd_config
+PasswordAuthentication yes
+Port 22
+sudo service ssh restart
+

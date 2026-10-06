@@ -1,0 +1,5 @@
+sudo passwd root
+>sudo nano /etc/ssh/sshd_config
+PermitRootLogin yes
+PasswordAuthentication yes
+sudo systemctl restart ssh
