@@ -335,7 +335,207 @@ configure_network() {
 }
 
 # ==========================================================
-#  4. Extras
+#  4. Firewall & Ports (UFW)
+# ==========================================================
+ensure_ufw() {
+    command -v ufw >/dev/null && return 0
+    warn "UFW is not installed."
+    if confirm "Install UFW now?"; then
+        apt-get update && apt-get install -y ufw || { err "Failed to install UFW."; return 1; }
+        ok "UFW installed."
+    else
+        return 1
+    fi
+}
+
+valid_port() {  # valid_port <number>
+    [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= 65535 ))
+}
+
+ask_port() {  # sets PORT
+    local p
+    while true; do
+        read -r -p "Enter port (1-65535, empty to cancel): " p
+        [[ -z "$p" ]] && return 1
+        if valid_port "$p"; then PORT=$p; return 0; fi
+        err "Invalid port number."
+    done
+}
+
+ask_proto() {  # sets PROTO to tcp/udp/both
+    local p
+    read -r -p "Protocol (tcp/udp/both) [tcp]: " p
+    p=${p,,}; [[ -z "$p" ]] && p=tcp
+    case $p in
+        tcp|udp|both) PROTO=$p; return 0 ;;
+        *) err "Invalid protocol."; return 1 ;;
+    esac
+}
+
+firewall_status() {
+    header "Firewall Status & Open Ports"
+    ensure_ufw || return
+    echo "${BOLD}--- UFW status ---${NC}"
+    ufw status verbose
+    echo
+    echo "${BOLD}--- UFW rules (numbered) ---${NC}"
+    ufw status numbered
+    echo
+    echo "${BOLD}--- Listening ports (ss) ---${NC}"
+    if command -v ss >/dev/null; then
+        ss -tuln
+    else
+        netstat -tuln 2>/dev/null || { err "Neither 'ss' nor 'netstat' found."; return; }
+    fi
+    echo
+    echo "${BOLD}--- Listening processes ---${NC}"
+    if command -v ss >/dev/null; then
+        ss -tulpn 2>/dev/null || ss -tulnp
+    fi
+}
+
+firewall_enable() {
+    header "Enable Firewall"
+    ensure_ufw || return
+    if ufw status | grep -q "Status: active"; then
+        ok "Firewall is already ACTIVE."
+        ufw status verbose
+        return
+    fi
+    warn "Enabling UFW will activate the firewall."
+    warn "Make sure SSH (port 22) is allowed or you may lose remote access!"
+    if ufw status numbered | grep -qw "22"; then
+        info "Port 22 appears to be allowed already."
+    else
+        if confirm "Allow SSH (port 22/tcp) before enabling? (recommended)"; then
+            ufw allow 22/tcp comment 'SSH' && ok "SSH allowed."
+        fi
+    fi
+    confirm "Enable the firewall now?" || { info "Cancelled."; return; }
+    ufw --force enable && ok "Firewall ENABLED."
+}
+
+firewall_disable() {
+    header "Disable Firewall"
+    ensure_ufw || return
+    if ! ufw status | grep -q "Status: active"; then
+        ok "Firewall is already INACTIVE."
+        return
+    fi
+    warn "This will turn OFF the firewall (all ports open)."
+    confirm "Disable the firewall?" || { info "Cancelled."; return; }
+    ufw disable && ok "Firewall DISABLED."
+}
+
+open_port() {
+    header "Open Port (Allow)"
+    ensure_ufw || return
+    ask_port || return
+    ask_proto || return
+    local from=""
+    if confirm "Restrict to a specific source IP/subnet? (empty = anywhere)"; then
+        while true; do
+            read -r -p "Source IP or CIDR (e.g. 192.168.1.10 or 192.168.1.0/24): " from
+            [[ -z "$from" ]] && break
+            if valid_ip "$from" || valid_cidr "$from"; then break; fi
+            err "Invalid IP/CIDR."
+        done
+    fi
+    if [[ "$PROTO" == "both" ]]; then
+        if [[ -n "$from" ]]; then
+            ufw allow from "$from" to any port "$PORT" && ok "Port $PORT (tcp+udp) allowed from $from."
+        else
+            ufw allow "$PORT" && ok "Port $PORT (tcp+udp) opened."
+        fi
+    else
+        if [[ -n "$from" ]]; then
+            ufw allow from "$from" to any port "$PORT" proto "$PROTO" && ok "Port $PORT/$PROTO allowed from $from."
+        else
+            ufw allow "$PORT/$PROTO" && ok "Port $PORT/$PROTO opened."
+        fi
+    fi
+    ufw status numbered
+}
+
+close_port() {
+    header "Close Port (Deny/Delete)"
+    ensure_ufw || return
+    info "Current rules:"
+    ufw status numbered
+    echo
+    echo "1) Delete by rule number"
+    echo "2) Delete by port/protocol"
+    echo "0) Cancel"
+    local mode; read -r -p "Choice: " mode
+    case $mode in
+        1)
+            local num
+            read -r -p "Enter rule number to delete: " num
+            [[ "$num" =~ ^[0-9]+$ ]] || { err "Invalid number."; return; }
+            ufw status numbered | grep -q "^\[ *$num\]" || { err "Rule [$num] not found."; return; }
+            if confirm "Delete rule [$num]?"; then
+                ufw --force delete "$num" && ok "Rule [$num] deleted."
+            fi
+            ;;
+        2)
+            ask_port || return
+            ask_proto || return
+            if [[ "$PROTO" == "both" ]]; then
+                # try deleting both variants; ignore failures individually
+                ufw delete allow "$PORT" 2>/dev/null || ufw delete allow "$PORT/tcp" 2>/dev/null
+                ufw delete allow "$PORT/tcp" 2>/dev/null; ufw delete allow "$PORT/udp" 2>/dev/null
+                ufw deny "$PORT" 2>/dev/null
+                ok "Close attempted for port $PORT (tcp+udp). Verify below."
+            else
+                if ufw delete allow "$PORT/$PROTO" 2>/dev/null; then
+                    ok "Port $PORT/$PROTO rule deleted."
+                else
+                    warn "No 'allow' rule found for $PORT/$PROTO, adding explicit deny."
+                    ufw deny "$PORT/$PROTO" && ok "Port $PORT/$PROTO denied."
+                fi
+            fi
+            ufw status numbered
+            ;;
+        0) return ;;
+        *) err "Invalid choice." ;;
+    esac
+}
+
+firewall_menu() {
+    while true; do
+        header "Firewall & Ports (UFW)"
+        if command -v ufw >/dev/null; then
+            if ufw status 2>/dev/null | grep -q "Status: active"; then
+                echo "Status: ${GREEN}ACTIVE${NC}"
+            else
+                echo "Status: ${RED}INACTIVE${NC}"
+            fi
+        else
+            echo "Status: ${YELLOW}UFW not installed${NC}"
+        fi
+        echo
+        echo " 1) Show status & listening ports"
+        echo " 2) Enable firewall"
+        echo " 3) Disable firewall"
+        echo " 4) Open port (allow)"
+        echo " 5) Close port (delete/deny)"
+        echo " 0) Back"
+        read -r -p "Choice: " c
+        case $c in
+            1) firewall_status ;;
+            2) firewall_enable ;;
+            3) firewall_disable ;;
+            4) open_port ;;
+            5) close_port ;;
+            0) return ;;
+            *) err "Invalid choice." ;;
+        esac
+        pause
+    done
+}
+
+# ==========================================================
+#  5. Extras
 # ==========================================================
 system_info() {
     header "System Information"
@@ -379,14 +579,16 @@ while true; do
     echo " 1) User management"
     echo " 2) Hostname"
     echo " 3) Network"
-    echo " 4) Extra tools"
+    echo " 4) Firewall & ports"
+    echo " 5) Extra tools"
     echo " 0) Exit"
     read -r -p "Choice: " choice
     case $choice in
         1) user_menu ;;
         2) set_hostname; pause ;;
         3) configure_network; pause ;;
-        4) extras_menu ;;
+        4) firewall_menu ;;
+        5) extras_menu ;;
         0) ok "Setup finished. Goodbye!"; exit 0 ;;
         *) err "Invalid choice."; sleep 1 ;;
     esac
